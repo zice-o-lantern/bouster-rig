@@ -19,6 +19,9 @@ class System:
     @property
     def endSocket(self):
         return self._end_socket
+    @property
+    def mod(self):
+        return self._mod
 
 class FKSystem(System):
     def __init__(self, jnt, name):
@@ -145,7 +148,7 @@ class IKSystem(System):
 
         cmds.orientConstraint(self._encChain_controller.curve, self._chain.endChain, mo=True)
 
-        cmds.group(self._chain.startChain, self._poleVector.offset, self._encChain_controller.offset,
+        self._mod = cmds.group(self._chain.startChain, self._poleVector.offset, self._encChain_controller.offset,
                    n=f"mod_IK_{end_chain_name}")
         self._end_socket = self._chain.endChain
         self._start_socket = self._chain.startChain
@@ -188,7 +191,7 @@ class IKFKSystem:
         for attr in attrs:
             cmds.setAttr(f"{self._settings.curve}.{attr}", lock=True, keyable=False, channelBox=False)
 
-        cmds.group()
+        self._mod = cmds.group(self._ik.mod, self._fk.mod, self._settings.offset, n=f"mod_{mod_name}")
 
 
     @property
@@ -254,8 +257,15 @@ class IKFKSwitch(System):
     def ik_socket(self):
         return self._arm_settings.ik.startSocket
     @property
+    def pv_socket(self):
+        return self._arm_settings.ik.pv_controller
+    
+    @property
     def fk_socket(self):
         return self._arm_settings.fk.startSocket
+    @property
+    def ik_controller_socket(self):
+        return self._arm_settings.ik.ik_controller.offset
 
 class IKSplineSystem(System):
     def __init__(self):
@@ -277,16 +287,16 @@ class IKSplineSystem(System):
         cmds.setAttr(f"{_ikSpline[0]}.dWorldUpVectorEndY", 0.0)
         cmds.setAttr(f"{_ikSpline[0]}.dWorldUpVectorEndZ", 1.0)
 
-        ctrl_body = Controller("body", shape="square", color="YELLOW", scale=(3, 3, 3), rotate=(0, 0, 85),
+        self._ctrl_body = Controller("body", shape="square", color="YELLOW", scale=(3, 3, 3), rotate=(0, 0, 85),
                                matchTo="pelvis")
 
         ctrl_pelvis = Controller("pelvis", color="YELLOW", shape="trapeze", scale=(1.1, 1.1, 1.1), rotate=(0, 90, -90),
                                  move=(0, -15, 0), height_baseline=True, matchTo="pelvis", parentConstraintTo="pelvis",
-                                 parentTo=ctrl_body.curve)
+                                 parentTo=self._ctrl_body.curve)
 
         ctrl_fk_spine_01 = Controller("FK_spine_01", color="YELLOW", shape="cube",
                                       scale=(.2, 2, 2), height_baseline=True,
-                                      matchTo="spine_01", parentTo=ctrl_body.curve)
+                                      matchTo="spine_01", parentTo=self._ctrl_body.curve)
 
         ctrl_fk_spine_02 = Controller("FK_spine_02", color="YELLOW", shape="cube",
                                       scale=(.2, 2, 2), height_baseline=True,
@@ -317,12 +327,16 @@ class IKSplineSystem(System):
 
         cmds.skinCluster(_curve, ctrl_hips.joint, ctrl_chest_tan.joint, ctrl_chest.joint, tsb=True)
 
-        cmds.group(ctrl_body.offset, _curve, "ikh_Spline_spine", n="mod_spine")
+        cmds.group(self._ctrl_body.offset, _curve, "ikh_Spline_spine", n="mod_spine")
         cmds.hide("ikh_Spline_spine", _curve)
 
-        self._start_socket = ctrl_body.offset
+        self._start_socket = self._ctrl_body.offset
 
         self._end_socket = "spine_05"
+
+    @property
+    def body_socket(self):
+        return self._ctrl_body.curve
         
 
 class NeckSystem(System):
@@ -340,6 +354,7 @@ class NeckSystem(System):
 
         self._end_socket = "head"
 
+"""
 shoulder_l = System("clavicle_l", name="clavicle_L", shape="cube", scale=(.5, .1, .1), move=(20, -150, 0))
 shoulder_r = System("clavicle_r", name="clavicle_R", shape="cube", scale=(.5, .1, .1), move=(-20, 150, 0))
 
@@ -371,4 +386,52 @@ cmds.parentConstraint(shoulder_l.endSocket, arm_l.fk_socket, mo=True)
 # Right arm
 cmds.parentConstraint(shoulder_r.endSocket, arm_r.ik_socket, mo=True)
 cmds.parentConstraint(shoulder_r.endSocket, arm_r.fk_socket, mo=True)
+"""
+# Root
+root = Controller("root", shape="cross", color="GREEN",scale=(4, 4, 4))
+cmds.group(root.offset, n="mod_root")
 
+#Shoulder
+shoulder_l = System("clavicle_l", name="clavicle_L", shape="cube", scale=(.5, .1, .1), move=(20, -150, 0))
+shoulder_r = System("clavicle_r", name="clavicle_R", shape="cube", scale=(.5, .1, .1), move=(-20, 150, 0))
+
+# Limbs
+limb_f_l = IKFKSwitch("upperlimb_f_l", "limb_f_L", orientToWorld=True, direction="forward", xAlignSettings=True)
+limb_f_r = IKFKSwitch("upperlimb_f_r", "limb_f_R", orientToWorld=True, direction="forward")
+
+# Arm constraints
+
+cmds.parentConstraint(shoulder_l.endSocket, limb_f_l.ik_socket, mo=True)
+cmds.parentConstraint(shoulder_l.endSocket, limb_f_l.pv_socket.offset, mo=True)
+
+cmds.parentConstraint(shoulder_r.endSocket, limb_f_r.ik_socket, mo=True)
+cmds.parentConstraint(shoulder_r.endSocket, limb_f_r.pv_socket.offset, mo=True)
+
+limb_b_l = IKFKSwitch("upperlimb_b_l", "limb_b_L", orientToWorld=True, direction="forward", xAlignSettings=True)
+limb_b_r = IKFKSwitch("upperlimb_b_r", "limb_b_R", orientToWorld=True, direction="forward")
+
+
+# Spine
+spine = IKSplineSystem()
+
+# Neck
+neck = NeckSystem()
+
+cmds.parentConstraint(spine.endSocket, shoulder_l.startSocket, mo=True)
+cmds.parentConstraint(spine.endSocket, shoulder_r.startSocket, mo=True)
+
+cmds.parentConstraint(spine.body_socket, limb_b_l.ik_socket, mo=True)
+cmds.parentConstraint(spine.body_socket, limb_b_l.pv_socket.offset, mo=True)
+
+cmds.parentConstraint(spine.body_socket, limb_b_r.ik_socket, mo=True)
+cmds.parentConstraint(spine.body_socket, limb_b_r.pv_socket.offset, mo=True)
+
+cmds.parentConstraint(spine.body_socket, neck.startSocket, mo=True)
+# Root Constraints
+cmds.parentConstraint(root.curve, spine.startSocket, mo=True)
+cmds.parentConstraint(root.curve, limb_b_l.ik_controller_socket, mo=True)
+cmds.parentConstraint(root.curve, limb_b_r.ik_controller_socket, mo=True)
+cmds.parentConstraint(root.curve, limb_f_r.ik_controller_socket, mo=True)
+cmds.parentConstraint(root.curve, limb_f_l.ik_controller_socket, mo=True)
+
+cmds.group()
