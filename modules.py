@@ -109,23 +109,22 @@ class IKSystem(System):
             _ik_scale = kwargs["scale_ik"]
 
         self._encChain_controller = Controller(f"IK_{end_chain_name}", shape="cube", height_baseline=True, color="RED",
-                                               matchTo=self._chain.endChain, orientToWorld=_orientToWorld,
-                                               orientConstraintTo=self._chain.endChain,
-                                               scale=(_ik_scale, _ik_scale, _ik_scale))
+                matchTo=self._chain.endChain, orientToWorld=_orientToWorld,
+                scale=(_ik_scale, _ik_scale, _ik_scale))
+        _offset = self._encChain_controller.curve
         
         #IK Handle
         _ikHandle = cmds.ikHandle(sj=self._chain.jntChain[0], ee=self._chain.jntChain[-1], n=f"ikh_{end_chain_name}")
         cmds.hide(_ikHandle[0])
         cmds.rename(_ikHandle[1], f"eff_{end_chain_name}")
-        cmds.parent(_ikHandle[0], self._encChain_controller.curve)
 
+        ### Pole Vector
         _scale_poleVector = 0.2
         if "scalePoleVector" in kwargs:
             _scale_poleVector = kwargs["scalePoleVector"]
 
         self._poleVector = Controller(f"pv_{end_chain_name}", shape="sphere", color="RED",
-                                      scale=(_scale_poleVector, _scale_poleVector, _scale_poleVector),
-                                      matchTo=self._chain.middleChain)
+                scale=(_scale_poleVector, _scale_poleVector, _scale_poleVector), matchTo=self._chain.middleChain)
         # self._poleVector.matchTo(self._chain.middleChain)
 
         _dir = 1
@@ -137,16 +136,77 @@ class IKSystem(System):
 
         _pv_distance = 20 * _dir
 
-        if "pv_distance" in kwargs:
-            _pv_distance = kwargs["pv_distance"] + _dir
+        if "pvDistance" in kwargs:
+            _pv_distance = kwargs["pvDistance"] * _dir
 
         cmds.move(0, _pv_distance, 0, self._poleVector.offset, r=True, os=True)
         
         cmds.poleVectorConstraint(self._poleVector.curve, f"ikh_{end_chain_name}")
 
+        if "softIK" in kwargs and kwargs["softIK"]:
+            print("hi")
+            _offset_softIK = cmds.group(em=True, n=f"offset_softIK_{end_chain_name}")
+            cmds.matchTransform(_offset_softIK, self._encChain_controller.offset, pos=True, rot=True)
+            _offset_softIK = cmds.parent(_offset_softIK, self._encChain_controller.curve)
+            _offset = _offset_softIK
+            # cmds.parent(_ikHandle[0], _offset)
+
+            # Add ratio attribute to handle
+            cmds.addAttr(self._encChain_controller.curve, ln="ratio", at="float", min=0, max=1, dv=0.1, keyable=True)
+
+            print(_offset_softIK)
+            # Distance between handle and start chain
+            editor_name = NodeEditorWindow()
+            editor_name.show_window()
+
+            cmds.nodeEditor(editor_name.window, e=True, ct=[-1, f"IK/FK Switch {end_chain_name}"])
+            cmds.createNode('distanceBetween', name=f"hardDistance_{end_chain_name}")
+            cmds.connectAttr(f"{self._chain.startChain}.worldMatrix[0]", f"hardDistance_{end_chain_name}.inMatrix1")
+            cmds.connectAttr(f"{self._encChain_controller.curve}.worldMatrix[0]", f"hardDistance_{end_chain_name}.inMatrix2")
+            cmds.expression(s=f"$chainLength = {self._chain.middleChain}.translateX + {self._chain.endChain}.translateX;\n\n$softRatio = $chainLength * (1 - {self._encChain_controller.curve}.ratio);\n\n$targetDistance = $chainLength - $softRatio;\n\n$hardDis = {f'hardDistance_{end_chain_name}'}.distance;\n\n$expResult = max($targetDistance * (1 - exp(($softRatio - $hardDis)/$targetDistance)), 0);\n\ntranslateY = $expResult;",
+                    n=f"softIK_{end_chain_name}", o=_offset_softIK[0], uc="all", ae=True)
+            
+
+
+        # Foot Roll
+        if "footRoll" in kwargs and kwargs["footRoll"]:
+            footRoll_loc_par = kwargs["footRollLoc"]
+
+            # Parent foot roll to ik controller
+            cmds.parent(footRoll_loc_par, _offset)
+
+            cmds.select(footRoll_loc_par, hi=True)
+            footRoll_locs = cmds.ls(long=True, sl=True, type='transform')
+
+            _loc_controllers = []
+            for loc in footRoll_locs:
+                if _loc_controllers == []:
+                    _loc_controllers.append(Controller(f"fr_{loc.split('|')[-1]}", shape="sphere", color="RED", scale=(0.2, 0.2, 0.2), matchTo=loc, 
+                            parentTo=_offset))
+                    
+                else:
+                    _loc_controllers.append(Controller(f"fr_{loc.split('|')[-1]}", shape="sphere", color="RED", scale=(0.2, 0.2, 0.2), matchTo=loc,
+                            parentTo=_loc_controllers[-1].curve))
+
+            cmds.aimConstraint(_loc_controllers[-1].curve, self._chain.endChain, aimVector=(1, 0, 0), upVector=(0, 0, 1), worldUpType="vector", worldUpVector=(0, 0, 1))
+
+            _ball = cmds.listRelatives(_joints[-1], children=True, type='joint')[0]
+            cmds.aimConstraint(_loc_controllers[-2].curve, _ball, aimVector=(1, 0, 0), upVector=(0, 0, 1), worldUpType="vector", worldUpVector=(0, 0, 1))
+            cmds.delete(footRoll_loc_par)
+            
+            # print(footRoll_locs)
+            cmds.parent(_ikHandle[0], _loc_controllers[-1].curve)
+
+
+        else:
+            cmds.parent(_ikHandle[0], _offset)
+            cmds.move(0, 0, 0, _ikHandle[0], r=True, os=True, a=True)
+            cmds.parentConstraint(self._encChain_controller.curve, self._poleVector.offset, mo=True)
+
         cmds.hide(self._chain.startChain)
 
-        cmds.orientConstraint(self._encChain_controller.curve, self._chain.endChain, mo=True)
+        # cmds.orientConstraint(_ikHandle[0], self._chain.endChain, mo=True)
+        
 
         self._mod = cmds.group(self._chain.startChain, self._poleVector.offset, self._encChain_controller.offset,
                    n=f"mod_IK_{end_chain_name}")
@@ -218,6 +278,7 @@ class IKFKSwitch(System):
 
         editor_name.show_window()
 
+        # Create a new window in the node editor for the IK/FK switch
         cmds.nodeEditor(editor_name.window, e=True, ct=[-1, f"IK/FK Switch {mod_name}"])
         cmds.createNode('floatMath', name=f"switchMath{mod_name}")
 
@@ -353,85 +414,3 @@ class NeckSystem(System):
         self._start_socket = cmds.group(_ctrl_neck_01.offset, n="mod_head")
 
         self._end_socket = "head"
-
-"""
-shoulder_l = System("clavicle_l", name="clavicle_L", shape="cube", scale=(.5, .1, .1), move=(20, -150, 0))
-shoulder_r = System("clavicle_r", name="clavicle_R", shape="cube", scale=(.5, .1, .1), move=(-20, 150, 0))
-
-arm_l = IKFKSwitch("upperarm_l", "arm_L")
-
-index_l = IKFKSwitch("index_01_l", "index_L", direction="forward", scale_ik=0.1,
-                     scalePoleVector=0.1, pv_distance=5)
-middle_l = IKFKSwitch("middle_01_l", "middle_L")
-ring_l = IKFKSwitch("ring_01_l", "ring_L")
-pinky_l = IKFKSwitch("pinky_01_l", "pinky_L")
-thumb_l = IKFKSwitch("thumb_01_l", "thumb_L")
-
-arm_r = IKFKSwitch("upperarm_r", "arm_R")
-leg_l = IKFKSwitch("thigh_l", "leg_L", orientToWorld=True, direction="forward", xAlignSettings=True)
-leg_r = IKFKSwitch("thigh_r", "leg_R", orientToWorld=True, direction="forward", xAlignSettings=True)
-spine = IKSplineSystem()
-neck = NeckSystem()
-
-cmds.parentConstraint(spine.endSocket, neck.startSocket, mo=True)
-
-# Shoulders
-cmds.parentConstraint(spine.endSocket, shoulder_l.startSocket, mo=True)
-cmds.parentConstraint(spine.endSocket, shoulder_r.startSocket, mo=True)
-
-# Left arm
-cmds.parentConstraint(shoulder_l.endSocket, arm_l.ik_socket, mo=True)
-cmds.parentConstraint(shoulder_l.endSocket, arm_l.fk_socket, mo=True)
-
-# Right arm
-cmds.parentConstraint(shoulder_r.endSocket, arm_r.ik_socket, mo=True)
-cmds.parentConstraint(shoulder_r.endSocket, arm_r.fk_socket, mo=True)
-"""
-# Root
-root = Controller("root", shape="cross", color="GREEN",scale=(4, 4, 4))
-cmds.group(root.offset, n="mod_root")
-
-#Shoulder
-shoulder_l = System("clavicle_l", name="clavicle_L", shape="cube", scale=(.5, .1, .1), move=(20, -150, 0))
-shoulder_r = System("clavicle_r", name="clavicle_R", shape="cube", scale=(.5, .1, .1), move=(-20, 150, 0))
-
-# Limbs
-limb_f_l = IKFKSwitch("upperlimb_f_l", "limb_f_L", orientToWorld=True, direction="forward", xAlignSettings=True)
-limb_f_r = IKFKSwitch("upperlimb_f_r", "limb_f_R", orientToWorld=True, direction="forward")
-
-# Arm constraints
-
-cmds.parentConstraint(shoulder_l.endSocket, limb_f_l.ik_socket, mo=True)
-cmds.parentConstraint(shoulder_l.endSocket, limb_f_l.pv_socket.offset, mo=True)
-
-cmds.parentConstraint(shoulder_r.endSocket, limb_f_r.ik_socket, mo=True)
-cmds.parentConstraint(shoulder_r.endSocket, limb_f_r.pv_socket.offset, mo=True)
-
-limb_b_l = IKFKSwitch("upperlimb_b_l", "limb_b_L", orientToWorld=True, direction="forward", xAlignSettings=True)
-limb_b_r = IKFKSwitch("upperlimb_b_r", "limb_b_R", orientToWorld=True, direction="forward")
-
-
-# Spine
-spine = IKSplineSystem()
-
-# Neck
-neck = NeckSystem()
-
-cmds.parentConstraint(spine.endSocket, shoulder_l.startSocket, mo=True)
-cmds.parentConstraint(spine.endSocket, shoulder_r.startSocket, mo=True)
-
-cmds.parentConstraint(spine.body_socket, limb_b_l.ik_socket, mo=True)
-cmds.parentConstraint(spine.body_socket, limb_b_l.pv_socket.offset, mo=True)
-
-cmds.parentConstraint(spine.body_socket, limb_b_r.ik_socket, mo=True)
-cmds.parentConstraint(spine.body_socket, limb_b_r.pv_socket.offset, mo=True)
-
-cmds.parentConstraint(spine.body_socket, neck.startSocket, mo=True)
-# Root Constraints
-cmds.parentConstraint(root.curve, spine.startSocket, mo=True)
-cmds.parentConstraint(root.curve, limb_b_l.ik_controller_socket, mo=True)
-cmds.parentConstraint(root.curve, limb_b_r.ik_controller_socket, mo=True)
-cmds.parentConstraint(root.curve, limb_f_r.ik_controller_socket, mo=True)
-cmds.parentConstraint(root.curve, limb_f_l.ik_controller_socket, mo=True)
-
-cmds.group()
